@@ -1,5 +1,6 @@
 #define _POSIX_C_SOURCE 200809L
 #define _GNU_SOURCE
+#include <stdint.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <err.h>
@@ -7,6 +8,8 @@
 #include <unistd.h>
 #include <ctype.h>
 #include <string.h>
+#include <stdbool.h>
+#include <sys/wait.h>
 
 #ifndef MAX_WORDS
 #define MAX_WORDS 512
@@ -15,7 +18,6 @@
 int previous_exit_status = 0;
 int previous_bgid = 0;
 
-int countDigits(int num);
 char *words[MAX_WORDS];
 size_t wordsplit(char const *line);
 char * expand(char const *word);
@@ -35,23 +37,230 @@ int main(int argc, char *argv[])
   char *line = NULL;
   size_t n = 0;
   for (;;) {
-//prompt:;
+prompt:;
     /* TODO: Manage background processes */
+
+
+
+
+
+    clearerr(input);
+    errno = 0;
 
     /* TODO: prompt */
     if (input == stdin) {
-
+        fprintf(stderr, "%s", expand("${PS1}"));
     }
+
+    /* get input from stdinput */
     ssize_t line_len = getline(&line, &n, input);
-    if (line_len < 0) err(1, "%s", input_fn);
+    if (line_len < 0) {
+      if (feof(input)) {
+        exit(atoi(expand("$?"))); /* exit if end of file is set */
+      }
+      else if (ferror(input)) {
+        goto prompt; /* re-enter prompt if error occured from reading */
+      }
+    }
     
-    size_t nwords = wordsplit(line);
+    /* split the input into array or words then expand */
+    size_t nwords = wordsplit(line); /* number of words */
     for (size_t i = 0; i < nwords; ++i) {
-      fprintf(stderr, "Word %zu: %s\n", i, words[i]);
+      /* fprintf(stderr, "Word %zu: %s\n", i, words[i]); */
       char *exp_word = expand(words[i]);
       free(words[i]);
       words[i] = exp_word;
-      fprintf(stderr, "Expanded Word %zu: %s\n", i, words[i]);
+      /* fprintf(stderr, "Expanded Word %zu: %s\n", i, words[i]); */
+    }
+
+    /* parsing the words separating words from operators*/
+    bool background = false;
+    char *read_from = NULL;
+    char *write_to = NULL;
+    char *append_to = NULL;
+    
+    int ntokens = 0;
+    char *tokens[MAX_WORDS];
+    
+    /* iterate over wordlist */
+    for (int i = 0; i < nwords; i++) {
+      if (i == nwords - 1 && strcmp(words[i], "&") == 0) { /* check if the last word is & */
+        background = true;
+        continue;
+      }
+      else if (strcmp(words[i], "<") == 0) { /* obtain file name to read from, skip over operator and filename, keep track of operators */
+        read_from = words[++i]; 
+        continue;
+      }
+      else if (strcmp(words[i], ">") == 0) { /* obtain file name to write to */
+        write_to = words[++i];
+        continue;
+      }
+      else if (strcmp(words[i], ">>") == 0) { /* obtain file name to write append to */
+        append_to = words[++i];
+        continue;
+      }
+      /* copy non-operator words into tokens array */
+      tokens[ntokens++] = words[i];
+    }
+    /* terminate tokens array with NULL */
+    tokens[ntokens] = NULL;
+    ntokens++;
+
+    /* begin execution using tokens */
+ 
+    /* no input given */
+    if (tokens[0] == NULL) { 
+        goto prompt;
+    }
+    
+    /* exit command */
+    else if (strcmp(tokens[0], "exit") == 0) {
+      if (ntokens > 3) {
+        fprintf(stderr, "Error: Too many arguments for exit command\n");
+        goto prompt;
+      }
+      else if (ntokens == 3) {
+        if (isdigit(*tokens[1])) {
+            exit(atoi(tokens[1]));
+        }
+        else {
+          fprintf(stderr, "Error: Argument is not a number.\n");
+          goto prompt;
+        }
+      }
+      else {
+        exit(atoi(expand("$?")));
+      }
+    }
+
+    /* cd command */
+    else if(strcmp(tokens[0], "cd") == 0) {
+      if (ntokens > 3) {
+        fprintf(stderr, "Error: Too many arguments for cd command\n");
+        goto prompt;
+      }
+      else if (ntokens == 3) {
+        if (chdir(tokens[1]) != 0) {
+          fprintf(stderr, "Error: Changing directories failed\n");
+        }
+      }
+      else {
+        if (chdir(expand("${HOME}")) != 0) {
+          fprintf(stderr, "Error: Default action for changing directories failed\n");
+        }
+        goto prompt;
+      }
+    }
+
+    /* execute non-built in commands */
+    else {
+      pid_t spawn_id = -5;
+      pid_t child_id = -5;
+      int child_status = -5;
+      spawn_id = fork();
+      
+
+      switch(spawn_id) {
+        case -1:
+          fprintf(stderr, "Fork failed\n");
+          goto prompt;
+        
+        case 0:
+          /* child processes */
+
+          /* redirection operators*/
+           if (append_to != NULL) {
+            FILE *output;
+            /* if (access(append_to, W_OK) == -1) { 
+              output = fopen(append_to, "a");
+              if (output == NULL) {
+                perror("Error: Failed to create file");
+                exit(EXIT_FAILURE);
+              }
+              
+              if (chmod(append_to, 511) == -1) {
+                perror("Error: Failed to set permissions");
+                exit(EXIT_FAILURE);
+              }
+            } */
+            
+              output = fopen(append_to, "a");
+              if (output == NULL) {
+                perror("Error: Failed to open append stream");
+                exit(EXIT_FAILURE);
+              }
+            
+            int result = dup2(fileno(output), 1);
+            if (result == -1) {
+              perror("Error: Updating append file descriptor failed");
+              exit(EXIT_FAILURE);
+            }
+         } 
+
+           if (write_to != NULL) {
+            FILE *output; 
+             /*   if (access(write_to, W_OK) == -1) { 
+              output = fopen(write_to, "w");
+             if (output == NULL) {
+                perror("Error: Failed to create file");
+                exit(EXIT_FAILURE);
+             }
+
+             if (chmod(write_to, 511) == -1) {
+                perror("Error: Failed to set permissions");
+                exit(EXIT_FAILURE);
+             }
+            }   */ 
+            
+              output = fopen(write_to, "w");
+              if (output == NULL) {
+                perror("Error: Failed to open output stream");
+                exit(EXIT_FAILURE);
+              
+            }
+            int result = dup2(fileno(output), 1);
+            if (result == -1) {
+              perror("Error: Updating write file descriptor failed");
+              exit(EXIT_FAILURE);
+            }
+
+           }
+
+          if (read_from != NULL) {
+            input = fopen(read_from, "re"); /* input is of FILE type */
+            if (!input) {
+              fprintf(stderr, "Error: Could not redirect read");
+              exit(EXIT_FAILURE);
+            }
+            int result = dup2(fileno(input), 0); /* use fileno to return integer file descriptor */
+            if (result == -1) {
+               fprintf(stderr, "Error: Updating read file descriptor failed");
+               exit(EXIT_FAILURE);
+            }
+          }
+
+          if (execvp(tokens[0], tokens) < 0) {
+            fprintf(stderr, "Error: execvp has failed.");
+            exit(EXIT_FAILURE);
+          }
+          else {
+            exit(EXIT_SUCCESS);
+          }
+        
+        default:
+          /* parent processes */
+          if (background == true) {
+            previous_bgid = spawn_id;
+            goto prompt;
+          }
+          else {
+            child_id = waitpid(spawn_id, &child_status, 0);
+
+            previous_exit_status = WEXITSTATUS(child_status);
+            goto prompt;
+          }
+      }
     }
   }
 }
@@ -176,53 +385,51 @@ expand(char const *word)
   build_str(pos, start);
   while (c) {
     if (c == '!') {
-        int digits = countDigits(previous_bgid);
-        char str_bgid[digits];
-        sprintf(str_bgid, NULL);
-        build_str(str_bgid, NULL);
+        char *str_bgid = NULL;
+        char str_default[] = "";
+        if (previous_bgid == 0){
+            build_str(str_default, NULL);
+        }
+        else if (asprintf(&str_bgid, "%jd", (intmax_t) previous_bgid) != -1) {
+            build_str(str_bgid, NULL);
+        }
+        free(str_bgid);
     }
     else if (c == '$') {
         pid_t pid = getpid();
         char *str_pid = NULL;
-        if (asprintf(&str_pid, "%jd", pid) != -1) {
+        if (asprintf(&str_pid, "%jd", (intmax_t) pid) != -1) {
             build_str(str_pid, NULL);
         }
-        int pid = getpid();
-        int digits = countDigits(pid);
-        char str_pid[digits];
-        sprintf(str_pid, "%d", pid);
-        build_str(str_pid, NULL);
+        free(str_pid);
     }
     else if (c == '?') {
-        int digits = countDigits(previous_exit_status);
+        char *str_exit_status = NULL;
         if (previous_exit_status == 0) {
             build_str("0", NULL);
         }
-        else{
-            char str_stat[digits];
-            sprintf(str_stat, "%d", previous_exit_status);
-            build_str(str_stat, NULL);
+        else {
+            if (asprintf(&str_exit_status, "%jd", (intmax_t) previous_exit_status) != -1) {
+                build_str(str_exit_status, NULL);
+                free (str_exit_status);
+            }
         }
-
     }
     else if (c == '{') {
-      build_str("<Parameter: ", NULL);
-      build_str(start + 2, end - 1);
-      build_str(">", NULL);
+      char *parameter = build_str(start + 2, end - 1);
+      char str_default[] = "";
+      char *envValue = getenv(parameter);
+      build_str(NULL, NULL);
+      build_str(pos, start);
+      if (envValue == NULL) {
+          build_str(str_default, NULL);
+      }else {
+        build_str(envValue, NULL);
+      }
     }
     pos = end;
     c = param_scan(pos, &start, &end);
     build_str(pos, start);
   }
   return build_str(start, NULL);
-}
-
-int
-countDigits(int num) {
-    int count = 0;
-    while (num > 0) {
-        count++;
-        num /= 10;
-    }
-    return count;
-}
+} 
