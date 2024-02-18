@@ -10,6 +10,8 @@
 #include <string.h>
 #include <stdbool.h>
 #include <sys/wait.h>
+#include <sys/stat.h>
+#include <signal.h>
 
 #ifndef MAX_WORDS
 #define MAX_WORDS 512
@@ -36,13 +38,30 @@ int main(int argc, char *argv[])
 
   char *line = NULL;
   size_t n = 0;
+
+  if (input == stdin) {
+    
+  }
+
+
   for (;;) {
 prompt:;
     /* TODO: Manage background processes */
+    int background_child_status = 0;
+    pid_t background_pid = waitpid(0, &background_child_status, WUNTRACED | WNOHANG);
 
-
-
-
+   if (background_pid > 0) {
+    if (WIFEXITED(background_child_status)) {
+      fprintf(stderr, "Child process %jd done. Exit status %d.\n", (intmax_t) background_pid, WEXITSTATUS(background_child_status));
+    }
+    if (WIFSIGNALED(background_child_status)) {
+      fprintf(stderr, "Child process %jd done. Signaled %d.\n", (intmax_t) background_pid, WTERMSIG(background_child_status));
+    }
+    if (WIFSTOPPED(background_child_status)) {
+      fprintf(stderr, "Child process %jd stopped. Continuing.\n", (intmax_t) background_pid);
+      kill(background_pid, SIGCONT);
+    }
+   } 
 
     clearerr(input);
     errno = 0;
@@ -94,6 +113,13 @@ prompt:;
       }
       else if (strcmp(words[i], ">") == 0) { /* obtain file name to write to */
         write_to = words[++i];
+        FILE *output;
+        output = fopen(write_to, "w");
+        if (output == NULL) {
+          perror("Error: Failed to open output stream");
+          exit(EXIT_FAILURE);
+        }
+        fclose(output);
         continue;
       }
       else if (strcmp(words[i], ">>") == 0) { /* obtain file name to write append to */
@@ -172,59 +198,30 @@ prompt:;
           /* redirection operators*/
            if (append_to != NULL) {
             FILE *output;
-            /* if (access(append_to, W_OK) == -1) { 
-              output = fopen(append_to, "a");
-              if (output == NULL) {
-                perror("Error: Failed to create file");
-                exit(EXIT_FAILURE);
-              }
-              
-              if (chmod(append_to, 511) == -1) {
-                perror("Error: Failed to set permissions");
-                exit(EXIT_FAILURE);
-              }
-            } */
-            
-              output = fopen(append_to, "a");
-              if (output == NULL) {
-                perror("Error: Failed to open append stream");
-                exit(EXIT_FAILURE);
-              }
-            
+            output = fopen(append_to, "a");
+            if (output == NULL) {
+              perror("Error: Failed to open append stream");
+              exit(EXIT_FAILURE);
+            }
             int result = dup2(fileno(output), 1);
             if (result == -1) {
               perror("Error: Updating append file descriptor failed");
               exit(EXIT_FAILURE);
             }
-         } 
+          } 
 
            if (write_to != NULL) {
-            FILE *output; 
-             /*   if (access(write_to, W_OK) == -1) { 
-              output = fopen(write_to, "w");
-             if (output == NULL) {
-                perror("Error: Failed to create file");
-                exit(EXIT_FAILURE);
-             }
-
-             if (chmod(write_to, 511) == -1) {
-                perror("Error: Failed to set permissions");
-                exit(EXIT_FAILURE);
-             }
-            }   */ 
-            
-              output = fopen(write_to, "w");
-              if (output == NULL) {
-                perror("Error: Failed to open output stream");
-                exit(EXIT_FAILURE);
-              
+            FILE *output;           
+            output = fopen(write_to, "w");
+            if (output == NULL) {
+              perror("Error: Failed to open output stream");
+              exit(EXIT_FAILURE);
             }
             int result = dup2(fileno(output), 1);
             if (result == -1) {
               perror("Error: Updating write file descriptor failed");
               exit(EXIT_FAILURE);
             }
-
            }
 
           if (read_from != NULL) {
@@ -255,9 +252,22 @@ prompt:;
             goto prompt;
           }
           else {
-            child_id = waitpid(spawn_id, &child_status, 0);
+            child_id = waitpid(spawn_id, &child_status, WUNTRACED);
 
-            previous_exit_status = WEXITSTATUS(child_status);
+            if (WIFSIGNALED(child_status)) {
+              previous_exit_status = 128 + WTERMSIG(child_status);
+            }
+            else if (WIFSTOPPED(child_status)) {
+              kill(spawn_id, SIGCONT);
+              fprintf(stderr, "Child process %jd stopped. Continuing.\n", (intmax_t) spawn_id);
+              previous_bgid = spawn_id;
+              previous_exit_status = WEXITSTATUS(child_status);
+              goto prompt;
+            }
+            else {
+              previous_exit_status = WEXITSTATUS(child_status);
+            }
+
             goto prompt;
           }
       }
