@@ -23,6 +23,7 @@ int previous_bgid = 0;
 char *words[MAX_WORDS];
 size_t wordsplit(char const *line);
 char * expand(char const *word);
+void sigint_handler(int sig);
 
 int main(int argc, char *argv[])
 {
@@ -39,10 +40,18 @@ int main(int argc, char *argv[])
   char *line = NULL;
   size_t n = 0;
 
-  if (input == stdin) {
-    
-  }
+struct sigaction SIGINT_action = {0}, SIGTSTP_action = {0}, SIGINT_old = {0}, SIGTSTP_old = {0};
 
+  /* Ignore SIGTSTP and make SIGINT do nothing initially*/
+  if (input == stdin) {
+    SIGTSTP_action.sa_handler = SIG_IGN;
+    sigaction(SIGTSTP, &SIGTSTP_action, &SIGTSTP_old);
+
+    SIGINT_action.sa_handler = sigint_handler;
+    sigfillset(&SIGINT_action.sa_mask);
+    SIGINT_action.sa_flags = 0;
+    sigaction(SIGINT, &SIGINT_action, &SIGINT_old);
+  }
 
   for (;;) {
 prompt:;
@@ -78,8 +87,15 @@ prompt:;
         exit(atoi(expand("$?"))); /* exit if end of file is set */
       }
       else if (ferror(input)) {
+        fprintf(stderr, "\n");
         goto prompt; /* re-enter prompt if error occured from reading */
       }
+    }
+
+    /* SIGINT shall be ignored at all times after reading a line of input */
+    if (input == stdin) {
+      SIGINT_action.sa_handler = SIG_IGN;
+      sigaction(SIGINT, &SIGINT_action, NULL);
     }
     
     /* split the input into array or words then expand */
@@ -194,6 +210,10 @@ prompt:;
         
         case 0:
           /* child processes */
+
+          /* reset signals */
+          sigaction(SIGINT, &SIGINT_old, NULL);
+          sigaction(SIGTSTP, &SIGTSTP_old, NULL);
 
           /* redirection operators*/
            if (append_to != NULL) {
@@ -443,3 +463,6 @@ expand(char const *word)
   }
   return build_str(start, NULL);
 } 
+
+/* does nothing*/
+void sigint_handler(int sig) {}
